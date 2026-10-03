@@ -532,6 +532,7 @@ wux::UIElement MakeXMeterPie(
 bool ParseHexColor(const std::wstring& value, winrt::Windows::UI::Color& color);
 void ShowAccountMenu(wux::FrameworkElement const& root);
 void ShowWeatherMenu(wux::FrameworkElement const& root);
+void ShowSleepForecastMenu(wux::FrameworkElement const& root);
 HWND FindCurrentProcessTaskbarWindow();
 void UpdateTaskbarWidgetsRoot(wux::UIElement const& root);
 void UpdateDynamicWidgetPanel(wux::UIElement const& root,
@@ -1548,6 +1549,26 @@ wux::FrameworkElement MakeSystemMetricPanel() {
     return panel;
 }
 
+wux::FrameworkElement MakeSleepForecastPanel() {
+    wuxc::Border panel;
+    panel.Name(L"TaskbarWidgetsSleepPanel");
+    panel.Width(140);
+    panel.Height(24);
+    panel.Visibility(wux::Visibility::Collapsed);
+    panel.Background(MakeBrush(0x01, 0x00, 0x00, 0x00));
+
+    wuxc::StackPanel meter;
+    meter.Name(L"TaskbarWidgetsSleepMeter");
+    meter.Width(140);
+    meter.Height(24);
+    meter.Orientation(wuxc::Orientation::Horizontal);
+    meter.Spacing(3);
+    meter.HorizontalAlignment(wux::HorizontalAlignment::Center);
+    meter.VerticalAlignment(wux::VerticalAlignment::Center);
+    panel.Child(meter);
+    return panel;
+}
+
 wux::FrameworkElement MakeParkingLotPanel() {
     wuxc::Border panel;
     panel.Name(L"TaskbarWidgetsParkingLotPanel");
@@ -1886,6 +1907,7 @@ wux::FrameworkElement MakeTaskbarWidgetsWidgetRoot(const WidgetInstanceRuntime& 
     root.Children().Append(MakeMediaPanel().as<wux::UIElement>());
     root.Children().Append(MakeSteamDownloadPanel().as<wux::UIElement>());
     root.Children().Append(MakeSystemMetricPanel().as<wux::UIElement>());
+    root.Children().Append(MakeSleepForecastPanel().as<wux::UIElement>());
     root.Children().Append(MakeParkingLotPanel().as<wux::UIElement>());
     root.Children().Append(MakeDynamicWidgetPanel().as<wux::UIElement>());
 
@@ -2053,6 +2075,8 @@ wux::FrameworkElement MakeTaskbarWidgetsWidgetRoot(const WidgetInstanceRuntime& 
             ShowWidgetLibraryWindow();
         } else if (activeDesign == L"parking-lot") {
             CycleParkingLotSelection(root.as<wux::UIElement>());
+        } else if (activeDesign == L"sleep-forecast") {
+            ShowSleepForecastMenu(root);
         } else if (activeDesign == L"media-player") {
             // Transport controls handle their own taps so custom left/right
             // ordering cannot turn visualizer clicks into media commands.
@@ -2073,7 +2097,8 @@ wux::FrameworkElement MakeTaskbarWidgetsWidgetRoot(const WidgetInstanceRuntime& 
         auto design = GetWidgetDesignFromRoot(root.as<wux::UIElement>());
         if (design == L"parking-lot") {
             ShowParkingLotContextMenu(root.as<wux::UIElement>());
-        } else if (design.rfind(L"system-", 0) == 0 || FindDynamicWidget(design)) {
+        } else if (design == L"sleep-forecast" ||
+                   design.rfind(L"system-", 0) == 0 || FindDynamicWidget(design)) {
             WriteTaskbarWidgetsCommand(L"openSettings", L"", design);
         } else {
             ShowWidgetContextMenu();
@@ -2794,6 +2819,113 @@ SystemMetricWidgetSettings ReadSystemMetricWidgetSettings(
     }
     settings.bandwidthKiloBytes = std::clamp(settings.bandwidthKiloBytes, 1.0, 1000000000.0);
     return settings;
+}
+
+struct SleepForecastSettings {
+    double sleepHours = 10.0;
+    std::wstring sleepAt;
+    bool use24Hour = true;
+};
+
+SleepForecastSettings ReadSleepForecastSettings() {
+    SleepForecastSettings settings;
+    std::string json = ReadUtf8File(GetWidgetSettingsPath());
+    for (const auto& object : ExtractJsonObjectArray(json, "widgets")) {
+        std::wstring id;
+        if (!ExtractJsonString(object, "id", id) ||
+            _wcsicmp(id.c_str(), L"sleep-forecast") != 0) {
+            continue;
+        }
+        ExtractJsonDouble(object, "sleepHours", settings.sleepHours);
+        ExtractJsonString(object, "sleepAt", settings.sleepAt);
+        ExtractJsonBool(object, "use24Hour", settings.use24Hour);
+        break;
+    }
+    settings.sleepHours = std::clamp(settings.sleepHours, 1.0, 24.0);
+    return settings;
+}
+
+std::wstring FormatClockMinutes(int minutesOfDay, bool use24Hour) {
+    const int normalized = ((minutesOfDay % 1440) + 1440) % 1440;
+    const int hour = normalized / 60;
+    const int minute = normalized % 60;
+    WCHAR buffer[24]{};
+    if (use24Hour) {
+        swprintf_s(buffer, L"%02d:%02d", hour, minute);
+        return buffer;
+    }
+    int hour12 = hour % 12;
+    if (hour12 == 0) {
+        hour12 = 12;
+    }
+    swprintf_s(buffer, L"%d:%02d %s", hour12, minute, hour < 12 ? L"AM" : L"PM");
+    return buffer;
+}
+
+bool ParseClockMinutes(const std::wstring& value, int& minutes) {
+    const size_t separator = value.find(L':');
+    if (separator == std::wstring::npos || separator == 0 || separator > 2 ||
+        value.size() - separator > 3) {
+        return false;
+    }
+
+    const std::wstring hourText = value.substr(0, separator);
+    const std::wstring minuteText = value.substr(separator + 1);
+    auto isDigits = [](const std::wstring& text) {
+        return !text.empty() &&
+               std::all_of(text.begin(), text.end(), [](wchar_t character) {
+                   return character >= L'0' && character <= L'9';
+               });
+    };
+    if (!isDigits(hourText) || !isDigits(minuteText)) {
+        return false;
+    }
+
+    const int hour = std::stoi(hourText);
+    const int minute = std::stoi(minuteText);
+    if (hour > 23 || minute > 59) {
+        return false;
+    }
+    minutes = hour * 60 + minute;
+    return true;
+}
+
+struct SleepForecastView {
+    int nowMinutes = 0;
+    int sleepMinutes = 0;
+    int wakeMinutes = 0;
+    int wakeDayShift = 0;
+    bool use24Hour = true;
+    double sleepHours = 10.0;
+    std::wstring nowText;
+    std::wstring sleepText;
+    std::wstring wakeText;
+};
+
+SleepForecastView ReadSleepForecastView() {
+    SleepForecastView view;
+    const SleepForecastSettings settings = ReadSleepForecastSettings();
+    view.sleepHours = settings.sleepHours;
+    view.use24Hour = settings.use24Hour;
+
+    SYSTEMTIME localTime{};
+    GetLocalTime(&localTime);
+    view.nowMinutes = localTime.wHour * 60 + localTime.wMinute;
+
+    view.sleepMinutes = view.nowMinutes;
+    if (!settings.sleepAt.empty() &&
+        !ParseClockMinutes(settings.sleepAt, view.sleepMinutes)) {
+        view.sleepMinutes = view.nowMinutes;
+    }
+
+    const int totalMinutes =
+        view.sleepMinutes + static_cast<int>(std::llround(settings.sleepHours * 60.0));
+    view.wakeDayShift = totalMinutes / 1440;
+    view.wakeMinutes = totalMinutes % 1440;
+    view.nowText = FormatClockMinutes(view.nowMinutes, view.use24Hour);
+    view.sleepText = FormatClockMinutes(view.sleepMinutes, view.use24Hour);
+    view.wakeText = FormatClockMinutes(view.wakeMinutes, view.use24Hour);
+    return view;
 }
 
 std::vector<WidgetInstanceRuntime> ReadWidgetInstances() {
@@ -4906,6 +5038,319 @@ void ShowWeatherMenu(wux::FrameworkElement const& root) {
                popupRect.left, popupRect.top, width, height);
     } catch (...) {
         Wh_Log(L"ShowWeatherMenu failed with unknown exception");
+    }
+}
+
+HWND g_sleepForecastMenuWindow = nullptr;
+int g_sleepForecastMenuHoveredIndex = -1;
+
+RECT GetSleepForecastSettingsButtonRect(RECT clientRect) {
+    return RECT{clientRect.right - 44, 10, clientRect.right - 12, 42};
+}
+
+int HitTestSleepForecastMenu(POINT point, RECT clientRect) {
+    RECT settingsRect = GetSleepForecastSettingsButtonRect(clientRect);
+    if (PtInRect(&settingsRect, point)) {
+        return 0;
+    }
+    return -1;
+}
+
+std::wstring SleepForecastDayShiftLabel(int shift) {
+    if (shift <= 0) {
+        return L"";
+    }
+    return shift == 1 ? L"+1 day" : L"+" + std::to_wstring(shift) + L" days";
+}
+
+void DrawSleepForecastMenuPopup(HDC dc, RECT clientRect) {
+    HBRUSH background = CreateSolidBrush(RGB(17, 17, 17));
+    FillRect(dc, &clientRect, background);
+    DeleteObject(background);
+    SetBkMode(dc, TRANSPARENT);
+
+    const COLORREF text = RGB(240, 240, 245);
+    const COLORREF muted = RGB(168, 164, 182);
+    COLORREF accentRef = GetSysColor(COLOR_HIGHLIGHT);
+    const COLORREF accent = RGB(GetRValue(accentRef), GetGValue(accentRef),
+                                GetBValue(accentRef));
+
+    HFONT bigFont = CreateFontW(
+        -26, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT bodyFont = CreateFontW(
+        -14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT smallFont = CreateFontW(
+        -11, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    HFONT iconFont = CreateFontW(
+        -15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+        DEFAULT_PITCH | FF_DONTCARE, L"Segoe MDL2 Assets");
+
+    RECT settingsRect = GetSleepForecastSettingsButtonRect(clientRect);
+    if (g_sleepForecastMenuHoveredIndex == 0) {
+        HBRUSH hoverBrush = CreateSolidBrush(RGB(34, 34, 34));
+        FillRect(dc, &settingsRect, hoverBrush);
+        DeleteObject(hoverBrush);
+    }
+    DrawPopupText(dc, L"\xE713", settingsRect, RGB(218, 218, 224), iconFont,
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+    SleepForecastView view = ReadSleepForecastView();
+
+    RECT labelRect{20, 14, clientRect.right - 60, 30};
+    DrawPopupText(dc, L"WAKE UP IF YOU SLEEP NOW", labelRect, muted, smallFont,
+                  DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+    RECT nowRect{20, 30, clientRect.right - 60, 60};
+    DrawPopupText(dc, view.wakeText, nowRect, accent, bigFont,
+                  DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+    SYSTEMTIME localTime{};
+    GetLocalTime(&localTime);
+    WCHAR dateBuffer[64]{};
+    GetDateFormatW(LOCALE_USER_DEFAULT, 0, &localTime,
+                   L"dddd, d MMMM yyyy", dateBuffer, 64);
+    RECT dateRect{20, 62, clientRect.right - 20, 80};
+    DrawPopupText(dc, dateBuffer, dateRect, muted, bodyFont,
+                  DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+    WCHAR hoursBuffer[16]{};
+    const int wholeHours = static_cast<int>(view.sleepHours);
+    if (view.sleepHours == static_cast<double>(wholeHours)) {
+        swprintf_s(hoursBuffer, L"%d h", wholeHours);
+    } else {
+        swprintf_s(hoursBuffer, L"%.1f h", view.sleepHours);
+    }
+
+    std::wstring source = view.sleepMinutes == view.nowMinutes
+                              ? std::wstring(L"falling asleep now")
+                              : L"sleeping at " + view.sleepText;
+    source += L"  ·  ";
+    source += hoursBuffer;
+    const std::wstring shiftLabel = SleepForecastDayShiftLabel(view.wakeDayShift);
+    if (!shiftLabel.empty()) {
+        source += L"  ·  ";
+        source += shiftLabel;
+    }
+    RECT sourceRect{20, 84, clientRect.right - 20, 100};
+    DrawPopupText(dc, source, sourceRect, text, bodyFont,
+                  DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(42, 42, 48));
+    HGDIOBJ oldPen = SelectObject(dc, pen);
+    MoveToEx(dc, 20, 110, nullptr);
+    LineTo(dc, clientRect.right - 20, 110);
+    SelectObject(dc, oldPen);
+    DeleteObject(pen);
+
+    const int columnWidth = (clientRect.right - 40) / 2;
+    const int rowHeight = 18;
+    const int tableTop = 130;
+    const int currentHour = view.nowMinutes / 60;
+    const int sleepMinutes =
+        static_cast<int>(std::llround(view.sleepHours * 60.0));
+
+    RECT headerRect{20, tableTop - 18, 20 + columnWidth - 12, tableTop - 2};
+    DrawPopupText(dc, L"SLEEP / WAKE", headerRect, muted, smallFont,
+                  DT_LEFT | DT_TOP | DT_SINGLELINE);
+    RECT headerRect2{20 + columnWidth, tableTop - 18,
+                     20 + 2 * columnWidth - 12, tableTop - 2};
+    DrawPopupText(dc, L"SLEEP / WAKE", headerRect2, muted, smallFont,
+                  DT_LEFT | DT_TOP | DT_SINGLELINE);
+
+    for (int index = 0; index < 24; ++index) {
+        const int hour = index % 12 + (index < 12 ? 0 : 12);
+        const int column = index < 12 ? 0 : 1;
+        const int left = 20 + column * columnWidth;
+        const int top = tableTop + (index % 12) * rowHeight;
+        const bool current = hour == currentHour;
+
+        if (current) {
+            RECT rowRect{left - 4, top - 2, left + columnWidth - 12, top + rowHeight - 2};
+            HBRUSH rowBrush = CreateSolidBrush(RGB(36, 32, 46));
+            FillRect(dc, &rowRect, rowBrush);
+            DeleteObject(rowBrush);
+        }
+
+        RECT sleepRect{left, top, left + 52, top + rowHeight};
+        DrawPopupText(dc, FormatClockMinutes(hour * 60, view.use24Hour),
+                      sleepRect, current ? accent : text, smallFont,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+
+        const int total = hour * 60 + sleepMinutes;
+        RECT wakeRect{left + 56, top, left + columnWidth - 8, top + rowHeight};
+        std::wstring wakeText =
+            FormatClockMinutes(total % 1440, view.use24Hour) +
+            (total >= 1440 ? L" +1" : L"");
+        DrawPopupText(dc, wakeText, wakeRect, current ? accent : muted, smallFont,
+                      DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
+
+    DeleteObject(bigFont);
+    DeleteObject(bodyFont);
+    DeleteObject(smallFont);
+    DeleteObject(iconFont);
+}
+
+LRESULT CALLBACK SleepForecastMenuWindowProc(HWND window, UINT message,
+                                            WPARAM wParam, LPARAM lParam) {
+    switch (message) {
+        case WM_ERASEBKGND:
+            return 1;
+
+        case WM_PAINT: {
+            PAINTSTRUCT paint{};
+            HDC dc = BeginPaint(window, &paint);
+            RECT client{};
+            GetClientRect(window, &client);
+            DrawSleepForecastMenuPopup(dc, client);
+            EndPaint(window, &paint);
+            return 0;
+        }
+
+        case WM_MOUSEMOVE: {
+            POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            RECT client{};
+            GetClientRect(window, &client);
+            int hoveredIndex = HitTestSleepForecastMenu(point, client);
+            if (hoveredIndex != g_sleepForecastMenuHoveredIndex) {
+                g_sleepForecastMenuHoveredIndex = hoveredIndex;
+                InvalidateRect(window, nullptr, FALSE);
+
+                TRACKMOUSEEVENT track{};
+                track.cbSize = sizeof(track);
+                track.dwFlags = TME_LEAVE;
+                track.hwndTrack = window;
+                TrackMouseEvent(&track);
+            }
+            return 0;
+        }
+
+        case WM_MOUSELEAVE:
+            if (g_sleepForecastMenuHoveredIndex != -1) {
+                g_sleepForecastMenuHoveredIndex = -1;
+                InvalidateRect(window, nullptr, FALSE);
+            }
+            return 0;
+
+        case WM_LBUTTONUP: {
+            POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            RECT client{};
+            GetClientRect(window, &client);
+            if (HitTestSleepForecastMenu(point, client) == 0) {
+                DestroyWindow(window);
+                WriteTaskbarWidgetsCommand(L"openSettings", L"", L"sleep-forecast");
+                return 0;
+            }
+            return 0;
+        }
+
+        case WM_LBUTTONDOWN:
+        case WM_RBUTTONDOWN:
+        case WM_MBUTTONDOWN: {
+            POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+            RECT client{};
+            GetClientRect(window, &client);
+            if (!PtInRect(&client, point)) {
+                DestroyWindow(window);
+            }
+            return 0;
+        }
+
+        case WM_ACTIVATE:
+            if (LOWORD(wParam) == WA_INACTIVE) {
+                DestroyWindow(window);
+            }
+            return 0;
+
+        case WM_KILLFOCUS:
+        case WM_CANCELMODE:
+            DestroyWindow(window);
+            return 0;
+
+        case WM_MOUSEACTIVATE:
+            return MA_NOACTIVATE;
+
+        case WM_CAPTURECHANGED:
+            if (g_sleepForecastMenuWindow == window &&
+                reinterpret_cast<HWND>(lParam) != window) {
+                DestroyWindow(window);
+            }
+            return 0;
+
+        case WM_DESTROY:
+            if (g_sleepForecastMenuWindow == window) {
+                g_sleepForecastMenuWindow = nullptr;
+            }
+            if (GetCapture() == window) {
+                ReleaseCapture();
+            }
+            g_sleepForecastMenuHoveredIndex = -1;
+            return 0;
+    }
+
+    return DefWindowProc(window, message, wParam, lParam);
+}
+
+void ShowSleepForecastMenu(wux::FrameworkElement const& root) {
+    try {
+        (void)root;
+
+        if (g_sleepForecastMenuWindow && IsWindow(g_sleepForecastMenuWindow)) {
+            DestroyWindow(g_sleepForecastMenuWindow);
+            return;
+        }
+
+        constexpr PCWSTR className = L"TaskbarWidgetsSleepForecastPopup";
+        static bool classRegistered = false;
+        if (!classRegistered) {
+            WNDCLASS windowClass{};
+            windowClass.lpfnWndProc = SleepForecastMenuWindowProc;
+            windowClass.hInstance = g_hookModule ? g_hookModule : GetModuleHandle(nullptr);
+            windowClass.lpszClassName = className;
+            windowClass.hCursor = LoadCursor(nullptr, IDC_ARROW);
+            if (!RegisterClass(&windowClass) &&
+                GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+                Wh_Log(L"RegisterClass failed for sleep popup: %u",
+                       GetLastError());
+                return;
+            }
+            classRegistered = true;
+        }
+
+        constexpr int width = 320;
+        constexpr int height = 356;
+        RECT popupRect = CalculateAccountMenuRect(width, height);
+
+        g_sleepForecastMenuWindow = CreateWindowEx(
+            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            className, L"TaskbarWidgets Sleep Forecast", WS_POPUP,
+            popupRect.left, popupRect.top, width, height,
+            FindCurrentProcessTaskbarWindow(), nullptr,
+            g_hookModule ? g_hookModule : GetModuleHandle(nullptr), nullptr);
+        if (!g_sleepForecastMenuWindow) {
+            Wh_Log(L"CreateWindowEx failed for sleep popup: %u",
+                   GetLastError());
+            return;
+        }
+
+        HRGN region = CreateRoundRectRgn(0, 0, width + 1, height + 1, 24, 24);
+        SetWindowRgn(g_sleepForecastMenuWindow, region, TRUE);
+        SetWindowPos(g_sleepForecastMenuWindow, HWND_TOPMOST, popupRect.left,
+                     popupRect.top, width, height,
+                     SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        SetCapture(g_sleepForecastMenuWindow);
+        InvalidateRect(g_sleepForecastMenuWindow, nullptr, TRUE);
+        Wh_Log(L"Sleep forecast popup shown at %d,%d %dx%d",
+               popupRect.left, popupRect.top, width, height);
+    } catch (...) {
+        Wh_Log(L"ShowSleepForecastMenu failed with unknown exception");
     }
 }
 
@@ -7714,6 +8159,53 @@ void ApplyWidgetOffset(wux::UIElement const& root,
     root.RenderTransform(transform);
 }
 
+void UpdateSleepForecastPanel(wux::UIElement const& root) {
+    SleepForecastView view = ReadSleepForecastView();
+
+    COLORREF highlight = GetSysColor(COLOR_HIGHLIGHT);
+    const winrt::Windows::UI::Color accent{
+        0xFF, static_cast<BYTE>(GetRValue(highlight)),
+        static_cast<BYTE>(GetGValue(highlight)), static_cast<BYTE>(GetBValue(highlight))};
+    const winrt::Windows::UI::Color muted{0xFF, 0xB7, 0xB3, 0xC4};
+
+    auto meterElement = FindNamedFrameworkElement(root, L"TaskbarWidgetsSleepMeter");
+    auto meter = meterElement ? meterElement.try_as<wuxc::StackPanel>() : nullptr;
+    if (!meter) {
+        return;
+    }
+
+    std::wstring signature = view.sleepText + L"|" + view.wakeText + L"|" +
+                             view.nowText + L"|" + std::to_wstring(view.wakeDayShift) +
+                             L"|" + (view.use24Hour ? L"24" : L"12");
+    auto tag = meter.Tag();
+    if (tag &&
+        std::wstring(winrt::unbox_value_or<winrt::hstring>(tag, L"").c_str()) == signature) {
+        return;
+    }
+    meter.Tag(winrt::box_value(winrt::hstring(signature)));
+    meter.Children().Clear();
+
+    wuxc::FontIcon moon;
+    moon.Glyph(L"\xE708");
+    moon.FontFamily(wuxm::FontFamily(L"Segoe MDL2 Assets"));
+    moon.FontSize(11);
+    moon.Foreground(wuxm::SolidColorBrush(accent));
+    moon.VerticalAlignment(wux::VerticalAlignment::Center);
+    meter.Children().Append(moon.as<wux::UIElement>());
+
+    meter.Children().Append(MakeXMeterTextLine(
+        view.sleepText, 40, 10, muted, wux::TextAlignment::Center).as<wux::UIElement>());
+    meter.Children().Append(MakeXMeterTextLine(
+        L"\x2192", 10, 10, muted, wux::TextAlignment::Center).as<wux::UIElement>());
+    meter.Children().Append(MakeXMeterTextLine(
+        view.wakeText, 44, 11, accent, wux::TextAlignment::Center).as<wux::UIElement>());
+    if (view.wakeDayShift > 0) {
+        meter.Children().Append(MakeXMeterTextLine(
+            L"+" + std::to_wstring(view.wakeDayShift), 14, 9, muted,
+            wux::TextAlignment::Center).as<wux::UIElement>());
+    }
+}
+
 void SetExpandedMode(wux::UIElement const& root, bool expanded) {
     std::wstring activeDesign = GetWidgetDesignFromRoot(root);
     if (activeDesign != L"codex-status") {
@@ -7730,6 +8222,9 @@ void SetExpandedMode(wux::UIElement const& root, bool expanded) {
                 rootElement.Height(channelTheme ? 44 : 40);
             } else if (activeDesign == L"parking-lot") {
                 rootElement.Width(112);
+                rootElement.Height(24);
+            } else if (activeDesign == L"sleep-forecast") {
+                rootElement.Width(140);
                 rootElement.Height(24);
             } else if (activeDesign.rfind(L"system-", 0) == 0) {
                 rootElement.Width(176);
@@ -7778,6 +8273,9 @@ void UpdateTaskbarWidgetsWidgetRoot(wux::UIElement const& root,
     }
 
     std::wstring activeDesign = instance.designId;
+    // Every branch below owns one panel and returns early, so the sleep panel is
+    // reset here instead of repeating a collapse line in all nine branches.
+    SetNamedVisibility(root, L"TaskbarWidgetsSleepPanel", wux::Visibility::Collapsed);
     bool isParkingLot = activeDesign == L"parking-lot";
     SetNamedVisibility(root, L"TaskbarWidgetsParkingLotPanel",
                        isParkingLot ? wux::Visibility::Visible
@@ -7842,6 +8340,22 @@ void UpdateTaskbarWidgetsWidgetRoot(wux::UIElement const& root,
         SetNamedVisibility(root, L"TaskbarWidgetsMediaPanel", wux::Visibility::Collapsed);
         SetNamedVisibility(root, L"TaskbarWidgetsSteamPanel", wux::Visibility::Collapsed);
         UpdateSystemMetricPanel(root, activeDesign);
+        return;
+    }
+    if (activeDesign == L"sleep-forecast") {
+        if (rootElement) {
+            rootElement.Width(140);
+            rootElement.Height(24);
+            rootElement.Margin(wux::ThicknessHelper::FromLengths(0, 0, 0, 0));
+        }
+        SetNamedVisibility(root, L"TaskbarWidgetsSleepPanel", wux::Visibility::Visible);
+        SetNamedVisibility(root, L"TaskbarWidgetsCompactPanel", wux::Visibility::Collapsed);
+        SetNamedVisibility(root, L"TaskbarWidgetsExpandedPanel", wux::Visibility::Collapsed);
+        SetNamedVisibility(root, L"TaskbarWidgetsWeatherPanel", wux::Visibility::Collapsed);
+        SetNamedVisibility(root, L"TaskbarWidgetsDiscordPanel", wux::Visibility::Collapsed);
+        SetNamedVisibility(root, L"TaskbarWidgetsMediaPanel", wux::Visibility::Collapsed);
+        SetNamedVisibility(root, L"TaskbarWidgetsSteamPanel", wux::Visibility::Collapsed);
+        UpdateSleepForecastPanel(root);
         return;
     }
     if (activeDesign == L"media-player") {
@@ -8275,6 +8789,9 @@ double WidgetDesignWidth(const std::wstring& designId) {
     }
     if (designId == L"weather-static") {
         return 240.0;
+    }
+    if (designId == L"sleep-forecast") {
+        return 140.0;
     }
     return 184.0;
 }
