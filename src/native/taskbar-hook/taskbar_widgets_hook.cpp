@@ -6803,15 +6803,15 @@ wux::UIElement MakeDynamicMarqueeText(const std::wstring& text,
     return viewport;
 }
 
-thread_local wuxc::Flyout g_dynamicWidgetPopup{nullptr};
+thread_local wuxcp::Popup g_dynamicWidgetPopup{nullptr};
 thread_local wuxc::Border g_dynamicWidgetPopupShell{nullptr};
 thread_local std::wstring g_dynamicWidgetPopupInstance;
 thread_local std::wstring g_dynamicWidgetPopupSignature;
 
 void HideDynamicWidgetPopup() {
     if (g_dynamicWidgetPopup) {
-        g_dynamicWidgetPopup.Hide();
-        g_dynamicWidgetPopup.Content(nullptr);
+        g_dynamicWidgetPopup.IsOpen(false);
+        g_dynamicWidgetPopup.Child(nullptr);
     }
     g_dynamicWidgetPopup = nullptr;
     g_dynamicWidgetPopupShell = nullptr;
@@ -7085,8 +7085,9 @@ bool ShowDynamicWidgetPopup(const wux::UIElement& anchor,
         shell.Child(BuildDynamicElement(
             definition->expandedLayout, ReadDynamicWidgetContext(instance), &instance));
 
-        wuxc::Flyout popup;
-        popup.Content(shell);
+        wuxcp::Popup popup;
+        popup.Child(shell);
+        popup.IsLightDismissEnabled(true);
         HWND taskbar = FindCurrentProcessTaskbarWindow();
         RECT taskbarRect{};
         RECT monitorRect{};
@@ -7104,25 +7105,36 @@ bool ShowDynamicWidgetPopup(const wux::UIElement& anchor,
         }
         const bool expandUp = definition->expandDirection == L"up" ||
             (definition->expandDirection == L"auto" && taskbarAtBottom);
-        popup.Placement(expandUp ? wuxcp::FlyoutPlacementMode::Top
-                                 : wuxcp::FlyoutPlacementMode::Bottom);
+
+        auto target = anchor.as<wux::FrameworkElement>();
+        const double anchorHeight = target.ActualHeight() > 0.0
+                                        ? static_cast<double>(target.ActualHeight())
+                                        : definition->height;
+        // The taskbar island is only 48 DIP tall, so the expanded surface must be
+        // allowed outside its bounds; a Flyout is placed below the taskbar instead.
+        popup.ShouldConstrainToRootBounds(false);
+        popup.Target(target);
+        popup.HorizontalOffset(0.0);
+        popup.VerticalOffset(expandUp
+                                 ? -(definition->expandedHeight + anchorHeight + 8.0)
+                                 : anchorHeight + 8.0);
 
         g_dynamicWidgetPopup = popup;
         g_dynamicWidgetPopupShell = shell;
         g_dynamicWidgetPopupInstance = instanceId;
         g_dynamicWidgetPopupSignature.clear();
-        popup.ShowAt(anchor.as<wux::FrameworkElement>());
-        Wh_Log(L"Native flyout ShowAt completed: %s; open=%d",
+        popup.IsOpen(true);
+        Wh_Log(L"Native popup IsOpen completed: %s; open=%d",
                widgetId.c_str(), popup.IsOpen() ? 1 : 0);
         return true;
     } catch (const winrt::hresult_error& error) {
-        Wh_Log(L"Native flyout failed for %s: 0x%08X %s",
+        Wh_Log(L"Native popup failed for %s: 0x%08X %s",
                widgetId.c_str(), static_cast<unsigned>(error.code().value),
                error.message().c_str());
         HideDynamicWidgetPopup();
         return false;
     } catch (...) {
-        Wh_Log(L"Native flyout failed for %s with an unknown error.",
+        Wh_Log(L"Native popup failed for %s with an unknown error.",
                widgetId.c_str());
         HideDynamicWidgetPopup();
         return false;
