@@ -34,7 +34,7 @@ int main() {
     assert(rightPosition.anchorPercent == 100 && rightPosition.offsetPx == 0);
     assert(ClampHostWidth(-10) == 1);
     assert(ClampHostWidth(5000) == 4096);
-    assert(taskbar_widgets::generated::kWidgets.size() == 11);
+    assert(taskbar_widgets::generated::kWidgets.size() == 10);
     auto cpu = std::find_if(
         taskbar_widgets::generated::kWidgets.begin(),
         taskbar_widgets::generated::kWidgets.end(),
@@ -47,12 +47,6 @@ int main() {
         [](const auto& widget) { return widget.id == L"parking-lot"; });
     assert(parkingLot != taskbar_widgets::generated::kWidgets.end());
     assert(parkingLot->width == 64.0 && parkingLot->height == 32.0);
-    auto sleepForecast = std::find_if(
-        taskbar_widgets::generated::kWidgets.begin(),
-        taskbar_widgets::generated::kWidgets.end(),
-        [](const auto& widget) { return widget.id == L"sleep-forecast"; });
-    assert(sleepForecast != taskbar_widgets::generated::kWidgets.end());
-    assert(sleepForecast->width == 140.0 && sleepForecast->height == 24.0);
     assert(taskbar_widgets::SystemMeterWidth(L"bar", 8) == 85.0);
     assert(taskbar_widgets::SystemMeterWidth(L"pie", 4) == 105.0);
     assert(taskbar_widgets::SystemMeterWidth(L"text", 2) == 91.0);

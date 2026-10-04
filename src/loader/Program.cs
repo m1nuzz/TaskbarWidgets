@@ -187,8 +187,6 @@ internal static class Program
             "system-network", () => SystemMetricsWorker.RunAsync("system-network", cancellation.Token), cancellation.Token);
         var systemMemoryTask = RunProviderIsolatedAsync(
             "system-memory", () => SystemMetricsWorker.RunAsync("system-memory", cancellation.Token), cancellation.Token);
-        var sleepForecastTask = RunProviderIsolatedAsync(
-            "sleep-forecast", () => SleepForecastWorker.RunAsync(cancellation.Token), cancellation.Token);
         var watchdogTask = Task.Run(
             () => RunExplorerWatchdogAsync(hookPath, cancellation.Token),
             cancellation.Token);
@@ -233,7 +231,6 @@ internal static class Program
                 systemStorageTask,
                 systemNetworkTask,
                 systemMemoryTask,
-                sleepForecastTask,
                 communityRegistryTask,
                 communityProvidersTask,
                 communityFullTrustTask,

@@ -20,7 +20,6 @@ const widgetPresentation = {
   "system-storage": { icon: "hard_drive", accent: "#34d399" },
   "system-network": { icon: "swap_vert", accent: "#22d3ee", featured: true },
   "system-memory": { icon: "developer_board", accent: "#c084fc" },
-  "sleep-forecast": { icon: "bedtime", accent: "#b8a2ff" },
 };
 
 let widgetCatalog = (window.TASKBAR_WIDGET_CATALOG || []).map((manifest) => ({
