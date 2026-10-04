@@ -506,7 +506,7 @@ struct WidgetInstanceRuntime;
 struct DynamicWidgetDefinition;
 const DynamicWidgetDefinition* FindDynamicWidget(const std::wstring& id);
 bool HasNativeExpandedWidget(const std::wstring& id);
-bool ShowDynamicWidgetPopup(const wux::UIElement& anchor,
+bool ShowDynamicWidgetPopup(const wux::UIElement& widgetRoot,
                             const std::wstring& widgetId,
                             const std::wstring& instanceId);
 void HideDynamicWidgetPopup();
@@ -7059,7 +7059,7 @@ wdj::JsonObject ReadDynamicWidgetContext(const WidgetInstanceRuntime& instance) 
     return context;
 }
 
-bool ShowDynamicWidgetPopup(const wux::UIElement& anchor,
+bool ShowDynamicWidgetPopup(const wux::UIElement& widgetRoot,
                             const std::wstring& widgetId,
                             const std::wstring& instanceId) {
     const auto* definition = FindDynamicWidget(widgetId);
@@ -7106,18 +7106,16 @@ bool ShowDynamicWidgetPopup(const wux::UIElement& anchor,
         const bool expandUp = definition->expandDirection == L"up" ||
             (definition->expandDirection == L"auto" && taskbarAtBottom);
 
-        auto target = anchor.as<wux::FrameworkElement>();
-        const double anchorHeight = target.ActualHeight() > 0.0
-                                        ? static_cast<double>(target.ActualHeight())
-                                        : definition->height;
-        // The taskbar island is only 48 DIP tall, so the expanded surface must be
-        // allowed outside its bounds; a Flyout is placed below the taskbar instead.
+        // A UWP Popup has no placement target, so its offsets are measured from the
+        // island root. The taskbar island is only 48 DIP tall, which is why a Flyout
+        // lands below the bar: the surface has to leave the root bounds and be moved
+        // by hand to the widget's canvas position.
         popup.ShouldConstrainToRootBounds(false);
-        popup.Target(target);
-        popup.HorizontalOffset(0.0);
+        popup.HorizontalOffset(wuxc::Canvas::GetLeft(widgetRoot));
         popup.VerticalOffset(expandUp
-                                 ? -(definition->expandedHeight + anchorHeight + 8.0)
-                                 : anchorHeight + 8.0);
+                                 ? -(definition->expandedHeight + 8.0)
+                                 : wuxc::Canvas::GetTop(widgetRoot) +
+                                       definition->height + 8.0);
 
         g_dynamicWidgetPopup = popup;
         g_dynamicWidgetPopupShell = shell;
@@ -7186,18 +7184,20 @@ void UpdateDynamicWidgetPanel(wux::UIElement const& root,
             button.HorizontalContentAlignment(wux::HorizontalAlignment::Stretch);
             button.VerticalContentAlignment(wux::VerticalAlignment::Stretch);
             button.Content(compact);
-            auto weakButton = winrt::make_weak(button);
+            auto weakRoot = winrt::make_weak(root);
             const std::wstring widgetId = instance.designId;
             const std::wstring instanceId = instance.instanceId;
             button.Click(
-                [weakButton, widgetId, instanceId](
+                [weakRoot, widgetId, instanceId](
                     auto const&, wux::RoutedEventArgs const&) {
-                    if (auto anchor = weakButton.get()) {
-                        const bool opened = ShowDynamicWidgetPopup(
-                            anchor.as<wux::UIElement>(), widgetId, instanceId);
-                        Wh_Log(L"Native widget button click: %s; opened=%d",
-                               widgetId.c_str(), opened ? 1 : 0);
+                    auto widgetRoot = weakRoot.get();
+                    if (!widgetRoot) {
+                        return;
                     }
+                    const bool opened = ShowDynamicWidgetPopup(
+                        widgetRoot, widgetId, instanceId);
+                    Wh_Log(L"Native widget button click: %s; opened=%d",
+                           widgetId.c_str(), opened ? 1 : 0);
                 });
             panel.Child(button);
         } else {
