@@ -5114,8 +5114,8 @@ void DrawSleepForecastMenuPopup(HDC dc, RECT clientRect) {
     SYSTEMTIME localTime{};
     GetLocalTime(&localTime);
     WCHAR dateBuffer[64]{};
-    GetDateFormatW(LOCALE_USER_DEFAULT, 0, &localTime,
-                   L"dddd, d MMMM yyyy", dateBuffer, 64);
+    GetDateFormatW(LOCALE_USER_DEFAULT, DATE_SHORTDATE, &localTime,
+                   nullptr, dateBuffer, 64);
     RECT dateRect{20, 62, clientRect.right - 20, 80};
     DrawPopupText(dc, dateBuffer, dateRect, muted, bodyFont,
                   DT_LEFT | DT_TOP | DT_SINGLELINE);
@@ -5239,6 +5239,12 @@ LRESULT CALLBACK SleepForecastMenuWindowProc(HWND window, UINT message,
             }
             return 0;
 
+        case WM_TIMER:
+            if (wParam == 1) {
+                InvalidateRect(window, nullptr, FALSE);
+            }
+            return 0;
+
         case WM_LBUTTONUP: {
             POINT point{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
             RECT client{};
@@ -5285,6 +5291,7 @@ LRESULT CALLBACK SleepForecastMenuWindowProc(HWND window, UINT message,
             return 0;
 
         case WM_DESTROY:
+            KillTimer(window, 1);
             if (g_sleepForecastMenuWindow == window) {
                 g_sleepForecastMenuWindow = nullptr;
             }
@@ -5346,6 +5353,7 @@ void ShowSleepForecastMenu(wux::FrameworkElement const& root) {
                      popupRect.top, width, height,
                      SWP_NOACTIVATE | SWP_SHOWWINDOW);
         SetCapture(g_sleepForecastMenuWindow);
+        SetTimer(g_sleepForecastMenuWindow, 1, 1000, nullptr);
         InvalidateRect(g_sleepForecastMenuWindow, nullptr, TRUE);
         Wh_Log(L"Sleep forecast popup shown at %d,%d %dx%d",
                popupRect.left, popupRect.top, width, height);
@@ -9483,6 +9491,38 @@ void UpdateTaskbarWidgetsRoot(wux::UIElement const& root) {
     }
 }
 
+// Widgets whose content is derived from the clock have no provider state file to
+// watch, so the animation tick re-renders them once the minute rolls over.
+void RefreshMinuteDrivenWidgets(wux::UIElement const& root) {
+    static thread_local int lastMinute = -1;
+    SYSTEMTIME localTime{};
+    GetLocalTime(&localTime);
+    if (localTime.wMinute == lastMinute) {
+        return;
+    }
+    lastMinute = localTime.wMinute;
+
+    auto hostElement = FindNamedFrameworkElement(root, L"TaskbarWidgetsWidgetHost");
+    auto host = hostElement.try_as<wuxc::Canvas>();
+    if (!host) {
+        return;
+    }
+
+    uint32_t childIndex = 0;
+    for (const auto& widget : ReadWidgetInstances()) {
+        if (!widget.enabled) {
+            continue;
+        }
+        if (childIndex >= host.Children().Size()) {
+            break;
+        }
+        if (widget.designId == L"sleep-forecast") {
+            UpdateTaskbarWidgetsWidgetRoot(host.Children().GetAt(childIndex), widget);
+        }
+        ++childIndex;
+    }
+}
+
 void RefreshInsertedTaskbarWidgetsRoots() {
     for (auto const& module : g_insertedModules) {
         if (module.root) {
@@ -9542,6 +9582,7 @@ wux::DispatcherTimer StartTaskbarWidgetsTimer(wux::UIElement const& root,
                 nextCollisionPass = now + std::chrono::milliseconds(100);
                 if (auto currentRoot = weakLayoutRoot.get()) {
                     ApplyWidgetCanvasLayout(currentRoot, ReadWidgetInstances());
+                    RefreshMinuteDrivenWidgets(currentRoot);
                 }
             }
         } catch (winrt::hresult_error const& ex) {
